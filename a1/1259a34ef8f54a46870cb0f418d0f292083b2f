@@ -1,0 +1,40 @@
+src/main.rs
+  s_f1463e5b62c545::t_da2352552d2be4 438-453,455
+  s_f1463e5b62c545::t_2816e256b7eac7 7
+  s_f1463e5b62c545::t_9935ac3fd5fe93 392,396
+  s_f1463e5b62c545::t_d8dd0a57d20dfe 435-437,457-470
+  s_f1463e5b62c545::t_e669889f3195cf 40-43
+  s_f1463e5b62c545::t_6bb23ec78feac8 373
+  s_f1463e5b62c545::t_68387c44372091 107-117
+  s_f1463e5b62c545::t_8420978d7d8680 199-218,220-221,223,225,227-262,264-308
+  s_f1463e5b62c545::t_46fcf5197a06d0 410-434
+  s_f1463e5b62c545::t_a00d24452e3aec 1-6,8-39,48-76,79-80,82-106,118-198,310,315-371,374-380,389-391,393-395,397,475-479
+  s_f1463e5b62c545::t_c844cfa632e8f0 44-47
+  s_f1463e5b62c545::t_2776267f19af88 77
+  s_f1463e5b62c545::t_452726153c1638 309,311-314
+  s_f1463e5b62c545::t_ae9afb259b2f79 78,81
+  s_f1463e5b62c545::t_41ca4dc456ba3d 263
+  s_f1463e5b62c545::t_4ed934c1bdb310 372,381-388,407
+  s_f1463e5b62c545::t_0e3367e49c7b03 219,222,224,226
+  s_f1463e5b62c545::t_79b956a65ca668 398-406,408-409,454,456,471-474
+Cargo.toml
+  s_f1463e5b62c545::t_cd2545e76de657 12
+  s_f1463e5b62c545::t_cfae1aaebed5d8 13
+  s_f1463e5b62c545::t_970f53df4aa82f 7-11,14-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "a11259a34ef8f54a46870cb0f418d0f292083b2f",
+  "prompts": {},
+  "sessions": {
+    "s_f1463e5b62c545": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5ea6c75c-1c2b-4dcc-bb9e-867dea489d61",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Joël Schulz-Andres <joel@systemscape.de>"
+    }
+  }
+}
