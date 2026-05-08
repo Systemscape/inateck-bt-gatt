@@ -1,0 +1,16 @@
+[package]
+name = "inateck-bt-gatt-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+inateck-bt-gatt = { workspace = true }
+bluer = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+arboard = "3"
+
+[lints]
+workspace = true

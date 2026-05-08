@@ -1,0 +1,16 @@
+[package]
+name = "inateck-bt-gatt-gui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+inateck-bt-gatt = { workspace = true }
+bluer = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+eframe = "0.31"
+arboard = "3"
+
+[lints]
+workspace = true

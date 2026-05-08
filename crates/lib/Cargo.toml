@@ -1,0 +1,13 @@
+[package]
+name = "inateck-bt-gatt"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bluer = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+
+[lints]
+workspace = true
