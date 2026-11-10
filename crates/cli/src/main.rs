@@ -5,7 +5,7 @@ use bluer::Address;
 use clap::{Parser, Subcommand};
 use inateck_bt_gatt::{
     connect, create_adapter, discover_services, find_notify_characteristic,
-    format_barcode_output, hex_dump, parse_iso15434, read_barcodes, scan_devices,
+    format_barcode_output, hex_dump, parse_iso15434, read_barcodes, scan_devices, ScanFilter,
 };
 
 #[derive(Parser)]
@@ -23,6 +23,10 @@ enum Command {
         /// Scan duration in seconds
         #[arg(short, long, default_value_t = 10)]
         duration: u64,
+
+        /// Only report Inateck scanners (address prefix AB:2B)
+        #[arg(short, long)]
+        inateck_only: bool,
     },
     /// Discover all GATT services and characteristics of a device
     Discover {
@@ -56,13 +60,26 @@ async fn main() -> Result<()> {
     let (_session, adapter) = create_adapter().await?;
 
     match cli.command {
-        Command::Scan { duration } => {
+        Command::Scan {
+            duration,
+            inateck_only,
+        } => {
+            let filter = if inateck_only {
+                ScanFilter::InateckOnly
+            } else {
+                ScanFilter::All
+            };
             println!(
-                "Scanning for BLE devices on {} for {}s...\n",
+                "Scanning for {} on {} for {}s...\n",
+                if inateck_only {
+                    "Inateck scanners"
+                } else {
+                    "BLE devices"
+                },
                 adapter.name(),
                 duration
             );
-            scan_devices(&adapter, Duration::from_secs(duration), |dev| {
+            scan_devices(&adapter, Duration::from_secs(duration), filter, |dev| {
                 println!("  {}", dev);
             })
             .await?;

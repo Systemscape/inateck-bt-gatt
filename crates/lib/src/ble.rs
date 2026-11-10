@@ -22,21 +22,48 @@ const CANDIDATE_UUIDS: &[&str] = &[
     "0000ff01-0000-1000-8000-00805f9b34fb",
 ];
 
+/// Inateck scanners ship with an unregistered OUI, so they cannot be identified
+/// by a vendor lookup. Their addresses do share this prefix.
+const INATECK_ADDR_PREFIX: [u8; 2] = [0xAB, 0x2B];
+
+/// Which advertising devices a scan should report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScanFilter {
+    /// Every device currently advertising.
+    #[default]
+    All,
+    /// Only devices whose address matches [`INATECK_ADDR_PREFIX`].
+    InateckOnly,
+}
+
+impl ScanFilter {
+    fn accepts(self, addr: Address) -> bool {
+        match self {
+            Self::All => true,
+            Self::InateckOnly => addr[..2] == INATECK_ADDR_PREFIX,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ScannedDevice {
     pub address: Address,
     pub name: Option<String>,
-    pub rssi: Option<i16>,
+    /// Always known: a device is only reported once it has advertised.
+    pub rssi: i16,
+}
+
+impl ScannedDevice {
+    /// Whether this looks like an Inateck scanner, judged by address prefix.
+    pub fn is_inateck(&self) -> bool {
+        ScanFilter::InateckOnly.accepts(self.address)
+    }
 }
 
 impl std::fmt::Display for ScannedDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = self.name.as_deref().unwrap_or("<unknown>");
-        let rssi = self
-            .rssi
-            .map(|r| format!("{} dBm", r))
-            .unwrap_or_else(|| "N/A".to_string());
-        write!(f, "{} {} (RSSI: {})", self.address, name, rssi)
+        write!(f, "{} {} (RSSI: {} dBm)", self.address, name, self.rssi)
     }
 }
 
@@ -70,26 +97,70 @@ pub async fn create_adapter() -> Result<(bluer::Session, Adapter)> {
     Ok((session, adapter))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addr(bytes: [u8; 6]) -> Address {
+        Address::new(bytes)
+    }
+
+    #[test]
+    fn all_accepts_any_address() {
+        assert!(ScanFilter::All.accepts(addr([0xAB, 0x2B, 0x01, 0x02, 0x03, 0x04])));
+        assert!(ScanFilter::All.accepts(addr([0xCC, 0x98, 0x8B, 0xB1, 0x72, 0x68])));
+    }
+
+    #[test]
+    fn inateck_only_matches_the_ab2b_prefix() {
+        assert!(ScanFilter::InateckOnly.accepts(addr([0xAB, 0x2B, 0x00, 0x00, 0x00, 0x00])));
+        assert!(ScanFilter::InateckOnly.accepts(addr([0xAB, 0x2B, 0xFF, 0xFF, 0xFF, 0xFF])));
+    }
+
+    #[test]
+    fn inateck_only_rejects_near_misses() {
+        // Right first byte, wrong second.
+        assert!(!ScanFilter::InateckOnly.accepts(addr([0xAB, 0x2C, 0x01, 0x02, 0x03, 0x04])));
+        // Right second byte, wrong first.
+        assert!(!ScanFilter::InateckOnly.accepts(addr([0xAA, 0x2B, 0x01, 0x02, 0x03, 0x04])));
+        // Prefix present, but not at the start.
+        assert!(!ScanFilter::InateckOnly.accepts(addr([0x00, 0xAB, 0x2B, 0x02, 0x03, 0x04])));
+        // A real device that leaked into scans before the RSSI fix.
+        assert!(!ScanFilter::InateckOnly.accepts(addr([0xCC, 0x98, 0x8B, 0xB1, 0x72, 0x68])));
+    }
+}
+
 pub async fn scan_devices(
     adapter: &Adapter,
     duration: Duration,
+    filter: ScanFilter,
     mut on_device: impl FnMut(ScannedDevice),
 ) -> Result<()> {
+    // Properties are fetched asynchronously and are usually not populated yet at
+    // DeviceAdded. This variant re-emits a device whenever they change, giving the
+    // RSSI check below a chance to see the real value.
     let discover = adapter
-        .discover_devices()
+        .discover_devices_with_changes()
         .await
         .context("failed to start discovery")?;
     tokio::pin!(discover);
 
-    let scan_result = timeout(duration, async {
+    // Running out the timeout is the normal way a scan ends.
+    let _ = timeout(duration, async {
         let mut seen = HashSet::new();
         while let Some(event) = discover.next().await {
             if let AdapterEvent::DeviceAdded(addr) = event
-                && seen.insert(addr)
+                && !seen.contains(&addr)
+                && filter.accepts(addr)
                 && let Ok(device) = adapter.device(addr)
             {
+                // BlueZ replays every device it still remembers, whether in range or
+                // not. Only one advertising during this scan has an RSSI.
+                let Ok(Some(rssi)) = device.rssi().await else {
+                    continue;
+                };
+                seen.insert(addr);
                 let name = device.name().await.ok().flatten();
-                let rssi = device.rssi().await.ok().flatten();
                 on_device(ScannedDevice {
                     address: addr,
                     name,
@@ -99,10 +170,6 @@ pub async fn scan_devices(
         }
     })
     .await;
-
-    if scan_result.is_err() {
-        // Timeout is expected
-    }
 
     Ok(())
 }
