@@ -5,7 +5,7 @@ use bluer::Address;
 use eframe::egui;
 use inateck_bt_gatt::{
     connect, create_adapter, find_notify_characteristic, format_barcode_output, parse_iso15434,
-    read_barcodes, scan_devices, ParsedBarcode, ScannedDevice,
+    read_barcodes, scan_devices, ParsedBarcode, ScanFilter, ScannedDevice,
 };
 
 enum BleCommand {
@@ -30,6 +30,9 @@ struct App {
     event_rx: mpsc::Receiver<BleEvent>,
 
     devices: Vec<ScannedDevice>,
+    /// View filter only — the scan itself always collects every device, so
+    /// toggling this re-filters instantly instead of forcing a rescan.
+    inateck_only: bool,
     selected_device: Option<usize>,
     connected_addr: Option<Address>,
     scanning: bool,
@@ -53,6 +56,7 @@ impl App {
             cmd_tx,
             event_rx,
             devices: Vec::new(),
+            inateck_only: false,
             selected_device: None,
             connected_addr: None,
             scanning: false,
@@ -120,30 +124,60 @@ impl eframe::App for App {
                 ui.heading("Devices");
                 ui.separator();
 
-                let scan_label = if self.scanning { "Scanning..." } else { "Scan" };
-                if ui
-                    .add_enabled(!self.scanning, egui::Button::new(scan_label))
-                    .clicked()
-                {
-                    self.devices.clear();
-                    self.selected_device = None;
-                    self.scanning = true;
-                    self.status = "Scanning...".to_string();
-                    let _ = self.cmd_tx.send(BleCommand::Scan);
-                }
+                ui.horizontal(|ui| {
+                    let scan_label = if self.scanning { "Scanning..." } else { "Scan" };
+                    if ui
+                        .add_enabled(!self.scanning, egui::Button::new(scan_label))
+                        .clicked()
+                    {
+                        self.devices.clear();
+                        self.selected_device = None;
+                        self.scanning = true;
+                        self.status = "Scanning...".to_string();
+                        let _ = self.cmd_tx.send(BleCommand::Scan);
+                    }
+
+                    // A selection that the filter just hid would otherwise keep
+                    // driving the Connect/Read buttons below.
+                    if ui
+                        .checkbox(&mut self.inateck_only, "Inateck only")
+                        .on_hover_text("Show only devices with an AB:2B:* address")
+                        .changed()
+                        && self.inateck_only
+                        && let Some(idx) = self.selected_device
+                        && !self.devices[idx].is_inateck()
+                    {
+                        self.selected_device = None;
+                    }
+                });
 
                 ui.separator();
 
                 egui::ScrollArea::vertical()
                     .max_height(200.0)
                     .show(ui, |ui| {
-                        for (i, dev) in self.devices.iter().enumerate() {
+                        let inateck_only = self.inateck_only;
+                        let mut shown = 0;
+                        // enumerate() before filter() keeps `i` an index into
+                        // self.devices, which selected_device refers to.
+                        for (i, dev) in self
+                            .devices
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, dev)| !inateck_only || dev.is_inateck())
+                        {
+                            shown += 1;
                             let name = dev.name.as_deref().unwrap_or("<unknown>");
                             let label = format!("{} {}", dev.address, name);
                             let selected = self.selected_device == Some(i);
                             if ui.selectable_label(selected, &label).clicked() {
                                 self.selected_device = Some(i);
                             }
+                        }
+
+                        let hidden = self.devices.len() - shown;
+                        if hidden > 0 {
+                            ui.weak(format!("{} device(s) hidden by filter", hidden));
                         }
                     });
 
@@ -255,7 +289,7 @@ fn spawn_ble_runtime(cmd_rx: mpsc::Receiver<BleCommand>, event_tx: mpsc::Sender<
                 match cmd {
                     BleCommand::Scan => {
                         let tx = event_tx.clone();
-                        scan_devices(&adapter, Duration::from_secs(10), |dev| {
+                        scan_devices(&adapter, Duration::from_secs(10), ScanFilter::All, |dev| {
                             let _ = tx.send(BleEvent::DeviceFound(dev));
                         })
                         .await
