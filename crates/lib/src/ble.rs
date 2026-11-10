@@ -97,39 +97,6 @@ pub async fn create_adapter() -> Result<(bluer::Session, Adapter)> {
     Ok((session, adapter))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn addr(bytes: [u8; 6]) -> Address {
-        Address::new(bytes)
-    }
-
-    #[test]
-    fn all_accepts_any_address() {
-        assert!(ScanFilter::All.accepts(addr([0xAB, 0x2B, 0x01, 0x02, 0x03, 0x04])));
-        assert!(ScanFilter::All.accepts(addr([0xCC, 0x98, 0x8B, 0xB1, 0x72, 0x68])));
-    }
-
-    #[test]
-    fn inateck_only_matches_the_ab2b_prefix() {
-        assert!(ScanFilter::InateckOnly.accepts(addr([0xAB, 0x2B, 0x00, 0x00, 0x00, 0x00])));
-        assert!(ScanFilter::InateckOnly.accepts(addr([0xAB, 0x2B, 0xFF, 0xFF, 0xFF, 0xFF])));
-    }
-
-    #[test]
-    fn inateck_only_rejects_near_misses() {
-        // Right first byte, wrong second.
-        assert!(!ScanFilter::InateckOnly.accepts(addr([0xAB, 0x2C, 0x01, 0x02, 0x03, 0x04])));
-        // Right second byte, wrong first.
-        assert!(!ScanFilter::InateckOnly.accepts(addr([0xAA, 0x2B, 0x01, 0x02, 0x03, 0x04])));
-        // Prefix present, but not at the start.
-        assert!(!ScanFilter::InateckOnly.accepts(addr([0x00, 0xAB, 0x2B, 0x02, 0x03, 0x04])));
-        // A real device that leaked into scans before the RSSI fix.
-        assert!(!ScanFilter::InateckOnly.accepts(addr([0xCC, 0x98, 0x8B, 0xB1, 0x72, 0x68])));
-    }
-}
-
 pub async fn scan_devices(
     adapter: &Adapter,
     duration: Duration,
@@ -238,43 +205,46 @@ pub async fn discover_services(device: &Device) -> Result<Vec<GattServiceInfo>> 
     Ok(services)
 }
 
+/// Find the characteristic the scanner sends barcodes on.
+///
+/// With `filter_uuid`, only that notify characteristic is accepted. Otherwise
+/// the best match from [`CANDIDATE_UUIDS`] wins (in that list's priority
+/// order, not the device's service order: the scanner also exposes the
+/// generic `ff01` before the Expert-mode `2af0`, and reading `ff01` yields
+/// undecodable frames), falling back to the first notify characteristic.
 pub async fn find_notify_characteristic(
     device: &Device,
     filter_uuid: Option<&str>,
 ) -> Result<(Characteristic, String)> {
+    let mut notify = Vec::new();
     for service in device.services().await? {
         for char in service.characteristics().await? {
-            let uuid = char.uuid().await?;
-            let flags = char.flags().await?;
-
-            if let Some(target) = filter_uuid {
-                if uuid.to_string() == target && flags.notify {
-                    return Ok((char, uuid.to_string()));
-                }
-            } else if flags.notify {
-                let uuid_str = uuid.to_string();
-                if CANDIDATE_UUIDS.contains(&uuid_str.as_str()) {
-                    return Ok((char, uuid_str));
-                }
+            if char.flags().await?.notify {
+                let uuid = char.uuid().await?.to_string();
+                notify.push((char, uuid));
             }
         }
     }
 
-    if filter_uuid.is_none() {
-        for service in device.services().await? {
-            for char in service.characteristics().await? {
-                let flags = char.flags().await?;
-                if flags.notify {
-                    let uuid = char.uuid().await?;
-                    return Ok((char, uuid.to_string()));
-                }
-            }
-        }
-    }
+    let uuids: Vec<&str> = notify.iter().map(|(_, uuid)| uuid.as_str()).collect();
+    let picked = match filter_uuid {
+        Some(target) => uuids.iter().position(|u| u.eq_ignore_ascii_case(target)),
+        None => pick_candidate(&uuids).or((!uuids.is_empty()).then_some(0)),
+    };
 
-    Err(anyhow::anyhow!(
-        "no suitable notify characteristic found - run 'discover' to inspect available characteristics"
-    ))
+    match picked {
+        Some(index) => Ok(notify.swap_remove(index)),
+        None => Err(anyhow::anyhow!(
+            "no suitable notify characteristic found - run 'discover' to inspect available characteristics"
+        )),
+    }
+}
+
+/// Index of the highest-priority [`CANDIDATE_UUIDS`] entry among `uuids`.
+fn pick_candidate(uuids: &[&str]) -> Option<usize> {
+    CANDIDATE_UUIDS
+        .iter()
+        .find_map(|candidate| uuids.iter().position(|u| u.eq_ignore_ascii_case(candidate)))
 }
 
 /// Buffer BLE notification chunks and yield complete barcode scans.
@@ -308,4 +278,63 @@ pub async fn read_barcodes(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addr(bytes: [u8; 6]) -> Address {
+        Address::new(bytes)
+    }
+
+    const EXPERT: &str = "00002af0-0000-1000-8000-00805f9b34fb";
+    const GENERIC_FF01: &str = "0000ff01-0000-1000-8000-00805f9b34fb";
+    const UNKNOWN: &str = "12345678-0000-1000-8000-00805f9b34fb";
+
+    #[test]
+    fn candidate_priority_beats_device_order() {
+        // As seen on a real scanner: the generic ff01 comes first
+        assert_eq!(pick_candidate(&[GENERIC_FF01, EXPERT]), Some(1));
+        assert_eq!(pick_candidate(&[EXPERT, GENERIC_FF01]), Some(0));
+    }
+
+    #[test]
+    fn candidate_falls_back_to_lower_priority_and_ignores_unknown() {
+        assert_eq!(pick_candidate(&[UNKNOWN, GENERIC_FF01]), Some(1));
+        assert_eq!(pick_candidate(&[UNKNOWN]), None);
+        assert_eq!(pick_candidate(&[]), None);
+    }
+
+    #[test]
+    fn candidate_match_is_case_insensitive() {
+        assert_eq!(
+            pick_candidate(&["00002AF0-0000-1000-8000-00805F9B34FB"]),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn all_accepts_any_address() {
+        assert!(ScanFilter::All.accepts(addr([0xAB, 0x2B, 0x01, 0x02, 0x03, 0x04])));
+        assert!(ScanFilter::All.accepts(addr([0xCC, 0x98, 0x8B, 0xB1, 0x72, 0x68])));
+    }
+
+    #[test]
+    fn inateck_only_matches_the_ab2b_prefix() {
+        assert!(ScanFilter::InateckOnly.accepts(addr([0xAB, 0x2B, 0x00, 0x00, 0x00, 0x00])));
+        assert!(ScanFilter::InateckOnly.accepts(addr([0xAB, 0x2B, 0xFF, 0xFF, 0xFF, 0xFF])));
+    }
+
+    #[test]
+    fn inateck_only_rejects_near_misses() {
+        // Right first byte, wrong second.
+        assert!(!ScanFilter::InateckOnly.accepts(addr([0xAB, 0x2C, 0x01, 0x02, 0x03, 0x04])));
+        // Right second byte, wrong first.
+        assert!(!ScanFilter::InateckOnly.accepts(addr([0xAA, 0x2B, 0x01, 0x02, 0x03, 0x04])));
+        // Prefix present, but not at the start.
+        assert!(!ScanFilter::InateckOnly.accepts(addr([0x00, 0xAB, 0x2B, 0x02, 0x03, 0x04])));
+        // A real device that leaked into scans before the RSSI fix.
+        assert!(!ScanFilter::InateckOnly.accepts(addr([0xCC, 0x98, 0x8B, 0xB1, 0x72, 0x68])));
+    }
 }
